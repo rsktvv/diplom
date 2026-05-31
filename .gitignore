@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.next/
+
+.env
+.env.*
+!.env.example
+
+coverage/
+streams/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
