@@ -124,6 +124,55 @@ const cameraStatusMeta: Record<CameraLiveStatus, { label: string; dot: string; b
   },
 };
 
+function isHlsStream(url?: string | null) {
+  return Boolean(url && url.toLowerCase().includes('.m3u8'));
+}
+
+function isMjpegStream(url?: string | null) {
+  if (!url) return false;
+  const normalized = url.toLowerCase();
+  const isHttpStream = normalized.startsWith('http://') || normalized.startsWith('https://');
+  return isHttpStream && (normalized.includes('/video') || normalized.includes('mjpeg') || !isHlsStream(url));
+}
+
+function getCameraStreamUrl(camera?: Camera | null) {
+  return camera?.hlsUrl || camera?.rtspUrl || '';
+}
+
+function getCameraStatusUrl(camera: Camera) {
+  const streamUrl = getCameraStreamUrl(camera);
+  if (!streamUrl) return '';
+
+  if (isMjpegStream(streamUrl)) {
+    return streamUrl.replace(/\/video\/?$/i, '/shot.jpg');
+  }
+
+  return isHlsStream(streamUrl) ? streamUrl : '';
+}
+
+function checkImageUrl(url: string) {
+  return new Promise<boolean>((resolve) => {
+    const image = new Image();
+    const timeout = window.setTimeout(() => {
+      image.onload = null;
+      image.onerror = null;
+      resolve(false);
+    }, 5000);
+
+    image.onload = () => {
+      window.clearTimeout(timeout);
+      resolve(true);
+    };
+
+    image.onerror = () => {
+      window.clearTimeout(timeout);
+      resolve(false);
+    };
+
+    image.src = `${url}${url.includes('?') ? '&' : '?'}_=${Date.now()}`;
+  });
+}
+
 function formatDateKey(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -332,7 +381,9 @@ export default function DashboardPage() {
     const checkCameras = async () => {
       await Promise.all(
         cameras.map(async (camera) => {
-          if (!camera.isActive || !camera.hlsUrl) {
+          const statusUrl = getCameraStatusUrl(camera);
+
+          if (!camera.isActive || !statusUrl) {
             setCameraStatuses((current) => ({ ...current, [camera.id]: 'offline' }));
             return;
           }
@@ -340,12 +391,20 @@ export default function DashboardPage() {
           setCameraStatuses((current) => ({ ...current, [camera.id]: 'checking' }));
 
           try {
-            const res = await fetch(camera.hlsUrl, {
+            if (isMjpegStream(statusUrl)) {
+              const isOnline = await checkImageUrl(statusUrl);
+              setCameraStatuses((current) => ({
+                ...current,
+                [camera.id]: isOnline ? 'online' : 'offline',
+              }));
+              return;
+            }
+
+            const res = await fetch(statusUrl, {
               method: 'GET',
               cache: 'no-store',
               signal: controller.signal,
             });
-
             setCameraStatuses((current) => ({
               ...current,
               [camera.id]: res.ok ? 'online' : 'offline',
@@ -652,6 +711,8 @@ export default function DashboardPage() {
           ? cameraStatuses[activeCamera.id] ?? 'checking'
           : 'offline';
         const activeCameraMeta = cameraStatusMeta[activeCameraStatus];
+        const activeCameraStreamUrl = getCameraStreamUrl(activeCamera);
+        const activeCameraIsMjpeg = isMjpegStream(activeCameraStreamUrl);
 
         return (
           <div>
@@ -708,10 +769,18 @@ export default function DashboardPage() {
                 </div>
 
                 <div className="flex aspect-video items-center justify-center bg-black">
-                  {activeCamera?.hlsUrl ? (
+                  {activeCameraStreamUrl && activeCameraIsMjpeg ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      key={activeCamera?.id}
+                      src={activeCameraStreamUrl}
+                      alt={activeCamera?.name ?? 'Поток камеры'}
+                      className="h-full w-full bg-black object-contain"
+                    />
+                  ) : activeCameraStreamUrl ? (
                     <video
-                      key={activeCamera.id}
-                      src={activeCamera.hlsUrl}
+                      key={activeCamera?.id ?? activeCameraStreamUrl}
+                      src={activeCameraStreamUrl}
                       controls
                       autoPlay
                       muted
@@ -719,9 +788,9 @@ export default function DashboardPage() {
                     />
                   ) : (
                     <div className="px-6 text-center">
-                      <p className="text-lg font-semibold">Поток ожидает HLS-ссылку</p>
+                      <p className="text-lg font-semibold">Поток камеры не указан</p>
                       <p className="mt-2 text-sm text-slate-400">
-                        Браузер не показывает RTSP напрямую. Добавьте HLS URL для просмотра в прямом эфире.
+                        Добавьте HLS-ссылку или MJPEG-поток IP Webcam вида http://IP:8080/video.
                       </p>
                     </div>
                   )}
